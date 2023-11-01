@@ -25,7 +25,7 @@ print(f'SBND imports: {s1-s0:.2f} s')
 #Constants/variables
 DATA_DIR  = '/sbnd/data/users/brindenc/analyze_sbnd/numu/'
 process_genie = True
-process_gibuu = False
+process_gibuu = True
 
 if process_gibuu:
   print('+'*90)
