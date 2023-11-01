@@ -19,9 +19,6 @@ def convert_ipynb_to_py(ipynb_file_name, py_file_name='output.py'):
 
     # create python exporter
     exporter = PythonExporter()
-
-    # use the 'simple' template to strip out cell structure
-    exporter.template_file = 'simple'
     
     # process the notebook we loaded
     body, _ = exporter.from_notebook_node(nb)

@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 # coding: utf-8
 
+
+
 #Boiler plate imports
 import uproot 
 import pandas as pd
@@ -19,126 +21,93 @@ sys.path.append('/sbnd/app/users/brindenc/mysbnana_v09_75_03/srcs/sbnana/sbnana/
 from makedf.branches import *
 from sbnd.general import utils,plotters
 from sbnd.volume import involume
-from sbnd.numu import selection
 from sbnd.cafclasses.nu import NU
 from sbnd.cafclasses.mcprim import MCPRIM
 from sbnd.constants import *
 from sbnd.prism import *
 from pyanalib import panda_helpers
 
-#Variables
-save_plots = True
+#numu helpers
+from sbnd.numu import selection
+from sbnd.numu.numu_constants import *
 
-#Constants
+#Constants/variables
 PLOTS_DIR = f'Plots/nu_{plotters.day}'
 DATA_DIR  = '/sbnd/data/users/brindenc/analyze_sbnd/numu/'
 GENIE_MODEL = 'GENIE 3.0.6 G18_10a_02_11a'
 GIBUU_MODEL = 'GiBUU 2021'
 SIM_LABEL = 'SBND Simulation'
-NOM_POT = 10e20/12 #Normalize to 10e20 POT / 12 -> 3 months of data
-GIBUU_LABEL = f'{SIM_LABEL}\n{GIBUU_MODEL}\n{NOM_POT:.2e} POT'
-GENIE_LABEL = f'{SIM_LABEL}\n{GENIE_MODEL}\n{NOM_POT:.2e} POT'
 
-#Set bins for muon kinematic phase space
-COSTHETA_BINS = np.array([-1,-0.5,0,0.27,0.45,0.62,0.76,0.86,0.94,1])
-THETA_BINS = np.arccos(COSTHETA_BINS)
-MOMENTUM_BINS = np.array([0,0.3,0.5,0.7,0.9,1.1,1.3,1.5,2,3])
-PRISM_BINS = np.arange(0,1.8,0.2)
+#Normalize to 10e20 POT / 12 -> 3 months
+nom_pot = 10e20/12 #3 months
 
+#More constants
+GIBUU_LABEL = f'{SIM_LABEL}\n{GIBUU_MODEL}\n{nom_pot:.2e} POT'
+GENIE_LABEL = f'{SIM_LABEL}\n{GENIE_MODEL}\n{nom_pot:.2e} POT'
 
-# Load Preprocessed data (do this if you've already processed the data)
-genie_nu = NU(pd.read_hdf(f'{DATA_DIR}/MCP2022A/mcp2022A_processed.h5', key='mcnu'))
-genie_prim = MCPRIM(pd.read_hdf(f'{DATA_DIR}/MCP2022A/mcp2022A_processed.h5', key='mcprim'))
+save_plots = False
+
+#Get pot first
 genie_hdr_df = pd.read_hdf(f'{DATA_DIR}/MCP2022A/MCP2022A_10k.df', key='hdr')
-
-gibuu_nu = NU(pd.read_hdf(f'{DATA_DIR}/gibuu/gibuu_v0_processed.h5', key='mcnu'))
-gibuu_prim = MCPRIM(pd.read_hdf(f'{DATA_DIR}/gibuu/gibuu_v0_processed.h5', key='mcprim'))
 gibuu_hdr_df = pd.read_hdf(f'{DATA_DIR}/gibuu/gibuu_v0.df', key='hdr')
 
-#POT from generators
-GENIE_POT = np.sum(genie_hdr_df.pot)
-GIBUU_POT = np.sum(gibuu_hdr_df.pot)
+genie_pot = np.sum(genie_hdr_df.pot)
+gibuu_pot = np.sum(gibuu_hdr_df.pot)
+
+#Now setup data with attributes
+genie_nu = NU(pd.read_hdf(f'{DATA_DIR}/MCP2022A/mcp2022A_processed.h5', key='mcnu')
+              ,pot=genie_pot
+              ,prism_bins=PRISM_BINS)
+genie_prim = MCPRIM(pd.read_hdf(f'{DATA_DIR}/MCP2022A/mcp2022A_processed.h5', key='mcprim')
+                      ,pot=genie_pot
+                      ,prism_bins=PRISM_BINS
+                      ,momentum_bins=MOMENTUM_BINS
+                      ,costheta_bins=COSTHETA_BINS)
+
+
+gibuu_nu = NU(pd.read_hdf(f'{DATA_DIR}/gibuu/gibuu_v0_processed.h5', key='mcnu')
+              ,pot=gibuu_pot
+              ,prism_bins=PRISM_BINS)
+gibuu_prim = MCPRIM(pd.read_hdf(f'{DATA_DIR}/gibuu/gibuu_v0_processed.h5', key='mcprim')
+                    ,pot=gibuu_pot
+                    ,prism_bins=PRISM_BINS
+                    ,momentum_bins=MOMENTUM_BINS
+                    ,costheta_bins=COSTHETA_BINS)
+
+#Replace all gibuu modes with 2 (all resonant)
+gibuu_nu.data.genie_mode = gibuu_nu.data.genie_mode.where((gibuu_nu.data.genie_mode < 3)\
+  | (gibuu_nu.data.genie_mode >= 32),2)
 
 #Scale genweight to POT
-genie_nu.scale_to_pot(NOM_POT,GENIE_POT)
-gibuu_nu.scale_to_pot(NOM_POT,GIBUU_POT)
-
-#Prism bins
-thetas = np.arange(0,1.8,0.2)
-
-#Get muons
-gibuu_muons = gibuu_prim.get_true_parts_from_pdg(13)
-genie_muons = genie_prim.get_true_parts_from_pdg(13)
-
-#Get angles
-gibuu_costheta = np.cos(gibuu_muons.theta)*np.sign(gibuu_muons.theta)
-genie_costheta = np.cos(genie_muons.theta)*np.sign(genie_muons.theta)
-
-#indeces for setting weights
-gibuu_inds = utils.get_inds_from_sub_inds(set(gibuu_costheta.index.values),set(gibuu_nu.index.values),3)
-genie_inds = utils.get_inds_from_sub_inds(set(genie_costheta.index.values),set(genie_nu.index.values),3)
-
-#Get weights
-genie_weights = genie_nu.loc[genie_inds,'genweight'].values
-gibuu_weights = gibuu_nu.loc[gibuu_inds,'genweight'].values
-
-#Get number of muons from weights
-genie_muon_count = np.sum(genie_weights)
-gibuu_muon_count = np.sum(gibuu_weights)
-
-#Get neutrino angle values for prism
-genie_prism_thetas = 180*genie_nu.loc[genie_inds,'theta']/np.pi
-gibuu_prism_thetas = 180*gibuu_nu.loc[gibuu_inds,'theta']/np.pi
-
-#Get list of muons by prism bin
-#ps_gibuu_prismbins = 
-
-
-# ## PRISM Plots
-
-
-# print(len(thetas))
-# thetas = np.array([0,0.3,0.5,0.7,0.9,1.1,1.3,1.5,1.8])
-# print(len(thetas))
-# thetas = np.array([0,0.4,0.6,0.8,0.9,1,1.2,1.4,1.8])
-# print(len(thetas))
-# thetas = np.array([0,0.4,0.5,0.6,0.7,0.8,1,1.3,1.8])
-# print(len(thetas))
-# thetas = np.array([0,0.35,0.5,0.65,0.8,0.95,1.1,1.2,1.8])
-# print(len(thetas))
-# thetas = np.array([0,0.35,0.55,0.65,0.75,0.9,1.05,1.25,1.8])
-# print(len(thetas))
-# thetas = np.array([0,0.4,0.55,0.7,0.8,0.9,1.0,1.25,1.8])
-# print(len(thetas))
+genie_nu.scale_to_pot(nom_pot)
+gibuu_nu.scale_to_pot(nom_pot)
 
 def make_prism_rings(theta,ax,**pltkwargs):
   center = prism_centroid
   radius = calc_rf(theta)
   [ax.add_patch(Circle(center,radius=r1,**pltkwargs)) for r1 in radius]
   return ax
-def make_prism_plot(mcnu,**pltkwargs):
+def make_prism_plot(nu_df,**pltkwargs):
   fig,ax = plt.subplots(figsize=(10,8))
-  im = ax.hist2d(mcnu.position.x,mcnu.position.y,**pltkwargs)#,norm=colors.LogNorm())
+  im = ax.hist2d(nu_df.position.x,nu_df.position.y,**pltkwargs)#,norm=colors.LogNorm())
   cbar = fig.colorbar(im[3],ax=ax)
   cbar.ax.tick_params(labelsize=16)
   
   #prism lines
   ax.scatter(-74,0,s=200,c='red',marker='x')
-  ax = make_prism_rings(thetas,ax,fill=False,ls='--',lw=2,color='red',alpha=0.4)
+  ax = make_prism_rings(PRISM_BINS,ax,fill=False,ls='--',lw=2,color='red',alpha=0.4)
   
   
   ax.set_xlabel('x [cm]')
   ax.set_ylabel('y [cm]')
-  ax.set_title(rf'{round(np.sum(mcnu.genweight.values)):,} $\nu_\mu CC$ events')
+  ax.set_title(rf'{round(np.sum(nu_df.genweight.values)):,} $\nu_\mu CC$ events')
   return fig,ax
 
-#Get prism values
-genie_prism_thetas = 180*genie_nu.loc[:,'theta']/np.pi
-gibuu_prism_thetas = 180*gibuu_nu.loc[:,'theta']/np.pi
+
 
 
 #Gibuu
-fig,ax = make_prism_plot(gibuu_nu,bins=20,cmap='Blues',weights=gibuu_nu.genweight)
+fig,ax = make_prism_plot(gibuu_nu.data,bins=20,cmap='Blues',weights=gibuu_nu.data.genweight)
 
 plotters.add_label(ax,GIBUU_LABEL,fontsize=20,alpha=0.8,color='darkred')
 plotters.set_style(ax)
@@ -148,9 +117,8 @@ if save_plots:
 
 
 
-
 #Genie
-fig,ax = make_prism_plot(genie_nu,bins=20,cmap='Blues',weights=genie_nu.genweight)
+fig,ax = make_prism_plot(genie_nu.data,bins=20,cmap='Blues',weights=genie_nu.data.genweight)
 
 plotters.add_label(ax,GENIE_LABEL,fontsize=20,alpha=0.8,color='darkred')
 plotters.set_style(ax)
@@ -161,23 +129,20 @@ if save_plots:
 
 
 
-
-
-colors = ['red','blue','green','orange','purple','cyan','magenta','yellow']
-def make_mode_plots(mcnu,mode_map,weights=None,ylabel='Events',bins=np.arange(0,5.1,0.1),density=False,title=None,
+def make_mode_plots(nu_df,mode_map,weights=None,ylabel='Events',bins=np.arange(0,5.1,0.1),density=False,title=None,
                     ax=None,fig=None,**pltkwargs):
-  norm = len(mcnu)/np.sum(mcnu.genweight.values)
-  modes = np.unique(mcnu.genie_mode.values)
+  norm = len(nu_df)/np.sum(nu_df.genweight.values)
+  modes = np.unique(nu_df.genie_mode.values)
   Es = [None]*len(modes)
   counts = Es.copy()
   labels = Es.copy()
   if weights is not None:
     weight_modes = Es.copy()
   for i,mode in enumerate(modes):
-    Es[i] = list(mcnu[mcnu.genie_mode==mode].E) #Get energy from mode
+    Es[i] = list(nu_df[nu_df.genie_mode==mode].E) #Get energy from mode
     labels[i] = f'{mode_map[mode]} : {round(len(Es[i])/norm):,}' #Mode label and 
     if weights is not None:
-      weight_modes[i] = mcnu[mcnu.genie_mode==mode].genweight
+      weight_modes[i] = nu_df[nu_df.genie_mode==mode].genweight
   if fig is None and ax is None: #Make figure if not provided
     fig,ax = plt.subplots(figsize=(10,8))
   if not density:
@@ -210,7 +175,7 @@ def make_mode_plots(mcnu,mode_map,weights=None,ylabel='Events',bins=np.arange(0,
       bottom = [b if not np.isnan(b) else 0 for b in bottom]
     ax.grid(True)
   if title is None:
-    title = rf'{round(len(mcnu)/norm):,} $\nu_\mu CC$ events'
+    title = rf'{round(len(nu_df)/norm):,} $\nu_\mu CC$ events'
   ax.set_title(title)
   ax.set_xlabel(r'$E_\nu$ [GeV]')
   if ylabel is not None:
@@ -220,10 +185,9 @@ def make_mode_plots(mcnu,mode_map,weights=None,ylabel='Events',bins=np.arange(0,
 
 
 
-
 #GENIE
 for i,dens in enumerate(['','_dens']):
-  fig,ax = make_mode_plots(genie_nu,GENIE_INTERACTION_MAP,weights=genie_nu.genweight,
+  fig,ax = make_mode_plots(genie_nu.data,GENIE_INTERACTION_MAP,weights=genie_nu.data.genweight,
                           density=True if i == 1 else False, #set density
                           ylabel='Normalized events' if i == 1 else 'Events',
                           )
@@ -238,12 +202,12 @@ for i,dens in enumerate(['','_dens']):
   if save_plots:
     plotters.save_plot(f'genie_modes{dens}',fig=fig,folder_name=PLOTS_DIR)
 
-temp_gibuu_nu = NU(gibuu_nu.copy())
-temp_gibuu_nu.genie_mode = temp_gibuu_nu.genie_mode.where((temp_gibuu_nu.genie_mode < 3) | (temp_gibuu_nu.genie_mode >= 32),2)
+
+
 
 #GIBUU
 for i,dens in enumerate(['','_dens']):
-  fig,ax = make_mode_plots(temp_gibuu_nu,GIBUU_INTERACTION_MAP,weights=temp_gibuu_nu.genweight,
+  fig,ax = make_mode_plots(gibuu_nu.data,GIBUU_INTERACTION_MAP,weights=gibuu_nu.data.genweight,
                           density=True if i == 1 else False, #set density
                           ylabel='Normalized events' if i == 1 else 'Events',
                           )
@@ -258,6 +222,16 @@ for i,dens in enumerate(['','_dens']):
   if save_plots:
     plotters.save_plot(f'gibuu_modes{dens}',fig=fig,folder_name=PLOTS_DIR)
 
+
+
+
+#Assign prism bins
+#genie_nu.assign_prism_bins()
+#gibuu_nu.assign_prism_bins()
+
+
+
+
 #Make these plots for different PRISM bins
 fig_gibuu_all,axs_gibuu = plt.subplots(4,2,figsize=(10,20),sharex=True)
 fig_gibuu_all_dens,axs_gibuu_dens = plt.subplots(4,2,figsize=(10,20),sharex=True)
@@ -266,16 +240,9 @@ fig_genie_all,axs_genie = plt.subplots(4,2,figsize=(10,20),sharex=True)
 fig_genie_all_dens,axs_genie_dens = plt.subplots(4,2,figsize=(10,20),sharex=True)
 
 for i,(ax_gibuu,ax_gibuu_dens,ax_genie,ax_genie_dens) in enumerate(zip(axs_gibuu.flatten(),axs_gibuu_dens.flatten(),axs_genie.flatten(),axs_genie_dens.flatten())):
-  if thetas[i] == thetas[-1]: break #skip last bin to avoid range errors
-  #Get neutrinos within theta bins
-  genie_inds_inrange = genie_prism_thetas[(genie_prism_thetas <= thetas[i+1]) & (genie_prism_thetas > thetas[i])].index.values
-  gibuu_inds_inrange = gibuu_prism_thetas[(gibuu_prism_thetas <= thetas[i+1]) & (gibuu_prism_thetas > thetas[i])].index.values
+  if PRISM_BINS[i] == PRISM_BINS[-1]: break #skip last bin to avoid range errors
   
-  #Get neutrino objects with these inds
-  genie_nu_inrange = genie_nu.loc[genie_inds_inrange]
-  temp_gibuu_nu_inrange = temp_gibuu_nu.loc[gibuu_inds_inrange]
-  
-  title = r'$\theta_{PRISM}' + rf' \in [{thetas[i]:.2f},{thetas[i+1]:.2f}]$'
+  title = r'$\theta_{PRISM}' + rf' \in [{PRISM_BINS[i]:.2f},{PRISM_BINS[i+1]:.2f}]$'
   
   #Make plots
   for j,dens in enumerate(['','_dens']):
@@ -284,19 +251,21 @@ for i,(ax_gibuu,ax_gibuu_dens,ax_genie,ax_genie_dens) in enumerate(zip(axs_gibuu
     else:
       ylabel=None
     #GIBUU
-    make_mode_plots(temp_gibuu_nu_inrange,GIBUU_INTERACTION_MAP,weights=temp_gibuu_nu_inrange.genweight,
+    gibuu_df_inrange = gibuu_nu.data[gibuu_nu.data.prism_bins == i]
+    make_mode_plots(gibuu_df_inrange,GIBUU_INTERACTION_MAP,weights=gibuu_df_inrange.genweight,
                             density=True if j == 1 else False, #set density
                             ylabel=ylabel,
-                            title=title + f' ({round(temp_gibuu_nu_inrange.genweight.sum()):,}' + r' $\nu_\mu CC$)',
+                            title=title + f' ({round(gibuu_df_inrange.genweight.sum()):,}' + r' $\nu_\mu CC$)',
                             ax=ax_gibuu if j == 0 else ax_gibuu_dens,
                             fig=fig_gibuu_all if j == 0 else fig_gibuu_all_dens
                             )
     
     #GENIE
-    make_mode_plots(genie_nu_inrange,GENIE_INTERACTION_MAP,weights=genie_nu_inrange.genweight,
+    genie_df_inrange = genie_nu.data[genie_nu.data.prism_bins == i]
+    make_mode_plots(genie_df_inrange,GENIE_INTERACTION_MAP,weights=genie_df_inrange.genweight,
                             density=True if j == 1 else False, #set density
                             ylabel=ylabel,
-                            title=title + f' ({round(genie_nu_inrange.genweight.sum()):,}' + r' $\nu_\mu CC$)',
+                            title=title + f' ({round(genie_df_inrange.genweight.sum()):,}' + r' $\nu_\mu CC$)',
                             ax=ax_genie if j == 0 else ax_genie_dens,
                             fig=fig_genie_all if j == 0 else fig_genie_all_dens,
                             )
@@ -318,11 +287,38 @@ if save_plots:
   plotters.save_plot(f'genie_modes_prism_dens',fig=fig_genie_all_dens,folder_name=PLOTS_DIR) 
   plotters.save_plot(f'genie_modes_prism',fig=fig_genie_all,folder_name=PLOTS_DIR) 
 
+
+# ## Muon info
+
+
+
+#Muon phase space bins
+# COSTHETA_BINS = np.array([-1,-0.5,0,0.27,0.45,0.62,0.76,0.86,0.94,1])
+# THETA_BINS = np.arccos(COSTHETA_BINS)*180/np.pi
+
+# MOMENTUM_BINS = np.array([0,0.3,0.5,0.7,0.9,1.1,1.3,1.5,2,3])
+
+#Get muons
+genie_muons = genie_prim.get_true_parts_from_pdg(13)
+gibuu_muons = gibuu_prim.get_true_parts_from_pdg(13)
+
+#Set modes
+genie_muons.add_genmode(genie_nu)
+gibuu_muons.add_genmode(gibuu_nu)
+
+#Set weights
+genie_muons.add_genweight(genie_nu)
+gibuu_muons.add_genweight(gibuu_nu)
+
+#Total number of muons
+genie_muon_count = genie_muons.get_part_count()
+gibuu_muon_count = gibuu_muons.get_part_count()
+
 for i,dens in enumerate(['','_dens']):
     fig,ax = plt.subplots(figsize=(8,6))
-    h = ax.hist([genie_costheta,gibuu_costheta],
+    h = ax.hist([genie_muons.data.costheta,gibuu_muons.data.costheta],
         bins=np.arange(-1,1.1,0.1),
-        weights=[genie_weights,gibuu_weights],
+        weights=[genie_muons.data.genweight,gibuu_muons.data.genweight],
         histtype='step',
         lw=3,
         alpha=0.9,
@@ -339,18 +335,20 @@ for i,dens in enumerate(['','_dens']):
     if save_plots:
         plotters.save_plot(f'costheta_mu{dens}',fig=fig,folder_name=PLOTS_DIR)
 
+
+
+
 for i,dens in enumerate(['','_dens']):
     fig,ax = plt.subplots(figsize=(8,6))
-    h = ax.hist([np.linalg.norm(genie_muons.genp,axis=1),
-        np.linalg.norm(gibuu_muons.genp,axis=1),],
-        bins=np.arange(0,4,0.1),
-        weights=[genie_weights,gibuu_weights],
-        histtype='step',
-        lw=3,
-        alpha=0.9,
-        label=[f'{GENIE_MODEL} ({round(genie_muon_count):,})',
-        f'{GIBUU_MODEL} ({round(gibuu_muon_count):,})',],
-        density=True if i == 1 else False, #set density
+    h = ax.hist([genie_muons.data.genp.tot,gibuu_muons.data.genp.tot,],
+                bins=np.arange(0,4,0.1),
+                weights=[genie_muons.data.genweight,gibuu_muons.data.genweight],
+                histtype='step',
+                lw=3,
+                alpha=0.9,
+                label=[f'{GENIE_MODEL} ({round(genie_muon_count):,})',
+                f'{GIBUU_MODEL} ({round(gibuu_muon_count):,})',],
+                density=True if i == 1 else False, #set density
         )
     ax.legend()
     ax.set_xlabel(r'$p_\mu$ [GeV]')
@@ -362,7 +360,7 @@ for i,dens in enumerate(['','_dens']):
         plotters.save_plot(f'momentum_mu{dens}',fig=fig,folder_name=PLOTS_DIR)
 
 #Make list of colors from colormap the same length as thetas
-colors = plotters.get_colors('gnuplot2',len(thetas)-1)
+colors = plotters.get_colors('gnuplot2',len(PRISM_BINS)-1)
 
 #Prism plot for muon kinematics - let's do this all at once to avoid double counting errors
 for i,dens in enumerate(['','_dens']):
@@ -380,102 +378,67 @@ for i,dens in enumerate(['','_dens']):
     ax_momenta = [ax_gibuu_momentum,ax_genie_momentum]
     
     #Labels for figures
-    labels_gibuu = [None]*(len(thetas)-1)
+    labels_gibuu = [None]*(len(PRISM_BINS)-1)
     labels_genie = labels_gibuu.copy()
     
-    #Prism momenta
-    ps_gibuu_prism = labels_gibuu.copy() #One histogram per theta bin
-    ps_genie_prism = labels_gibuu.copy() #One histogram per theta bin
-    
-    #Prism angles
-    costhetas_gibuu_prism = ps_gibuu_prism.copy()
-    costhetas_genie_prism = ps_genie_prism.copy()
-    
-    #Prism weights
-    weights_gibuu_prism = ps_gibuu_prism.copy()
-    weights_genie_prism = ps_genie_prism.copy()
-    
-    for j,_ in enumerate(thetas):
-        if thetas[j] == thetas[-1]: break #skip last bin to avoid range errors
-        #Get neutrinos within theta bins
-        genie_inds_inrange = genie_prism_thetas[(genie_prism_thetas <= thetas[j+1]) & (genie_prism_thetas > thetas[j])].index.values
-        gibuu_inds_inrange = gibuu_prism_thetas[(gibuu_prism_thetas <= thetas[j+1]) & (gibuu_prism_thetas > thetas[j])].index.values
-        
-        #Convert to muon indeces
-        genie_muon_inds_inrange = utils.get_inds_from_sub_inds(set(genie_muons.index.values),set(genie_inds_inrange),3)
-        gibuu_muon_inds_inrange = utils.get_inds_from_sub_inds(set(gibuu_muons.index.values),set(gibuu_inds_inrange),3)
-                
-        #Get muons within theta bins
-        genie_muons_inrange = genie_muons.loc[genie_muon_inds_inrange]
-        gibuu_muons_inrange = gibuu_muons.loc[gibuu_muon_inds_inrange]        
-        
-        #Get momenta
-        ps_genie_prism[j] = np.linalg.norm(genie_muons_inrange.genp,axis=1)
-        ps_gibuu_prism[j] = np.linalg.norm(gibuu_muons_inrange.genp,axis=1)
-        
-        #Get costheta angles
-        costhetas_genie_prism[j] = np.cos(genie_muons_inrange.theta.values)*np.sign(genie_muons_inrange.theta.values)
-        costhetas_gibuu_prism[j] = np.cos(gibuu_muons_inrange.theta.values)*np.sign(gibuu_muons_inrange.theta.values)
-        
-        #Get weights
-        weights_genie_prism[j] = genie_nu.loc[genie_inds_inrange,'genweight'].values
-        weights_gibuu_prism[j] = gibuu_nu.loc[gibuu_inds_inrange,'genweight'].values
+    for j,_ in enumerate(PRISM_BINS):
+        if PRISM_BINS[j] == PRISM_BINS[-1]: break #skip last bin to avoid range errors
+        #Mask prism bins
+        genie_muons_inrange = genie_muons.data[genie_muons.data.prism_bins == j]
+        gibuu_muons_inrange = gibuu_muons.data[gibuu_muons.data.prism_bins == j]
         
         #Set labels
-        labels_genie[j] = f'{round(thetas[j],2)} < ' + r'$\theta_{PRISM}$' + f' < {round(thetas[j+1],2)} ({round(np.sum(weights_genie_prism[j])):,})'
-        labels_gibuu[j] = f'{round(thetas[j],2)} < ' + r'$\theta_{PRISM}$' + f' < {round(thetas[j+1],2)} ({round(np.sum(weights_gibuu_prism[j])):,})'
-    
-    #Make histograms
-    for k,data in enumerate(costhetas_gibuu_prism):
-        ax_gibuu_costheta.hist(data, #cos theta values
+        labels_genie[j] = f'{round(PRISM_BINS[j],2)} < ' + r'$\theta_{PRISM}$'\
+        + f' < {round(PRISM_BINS[j+1],2)} ({round(np.sum(genie_muons_inrange.genweight)):,})'
+        labels_gibuu[j] = f'{round(PRISM_BINS[j],2)} < ' + r'$\theta_{PRISM}$'\
+        + f' < {round(PRISM_BINS[j+1],2)} ({round(np.sum(gibuu_muons_inrange.genweight)):,})'
+        
+        #Make histograms
+        ax_gibuu_costheta.hist(gibuu_muons_inrange.costheta, #cos theta values
             bins=np.arange(-1,1.1,0.1),
-            weights=weights_gibuu_prism[k],
+            weights=gibuu_muons_inrange.genweight,
             histtype='step',
             lw=2,
             alpha=0.9,
-            label=labels_gibuu[k],
+            label=labels_gibuu[j],
             density=True if i == 1 else False, #set density
-            linestyle='-' if k % 2 == 0 else '--', #alternate linestyle to help with visibility
-            color=colors[k],
+            linestyle='-' if j % 2 == 0 else '--', #alternate linestyle to help with visibility
+            color=colors[j],
             )
-    
-    for k,data in enumerate(costhetas_genie_prism):
-        ax_genie_costheta.hist(data, #cos theta values
+        ax_gibuu_momentum.hist(gibuu_muons_inrange.genp.tot, #momentum values
+            bins=np.arange(0,4,0.1),
+            weights=gibuu_muons_inrange.genweight,
+            histtype='step',
+            lw=2,
+            alpha=0.9,
+            label=labels_gibuu[j],
+            density=True if i == 1 else False, #set density
+            color=colors[j],
+            linestyle='-' if j % 2 == 0 else '--', #alternate linestyle to help with visibility
+            )
+        ax_genie_costheta.hist(genie_muons_inrange.costheta, #cos theta values
             bins=np.arange(-1,1.1,0.1),
-            weights=weights_genie_prism[k],
+            weights=genie_muons_inrange.genweight,
             histtype='step',
             lw=2,
             alpha=0.9,
-            label=labels_genie[k],
+            label=labels_genie[j],
             density=True if i == 1 else False, #set density
-            color=colors[k],
-            linestyle='-' if k % 2 == 0 else '--', #alternate linestyle to help with visibility
+            color=colors[j],
+            linestyle='-' if j % 2 == 0 else '--', #alternate linestyle to help with visibility
             )
-    for k,data in enumerate(ps_gibuu_prism):
-        ax_gibuu_momentum.hist(data, #momentum values
+        ax_genie_momentum.hist(genie_muons_inrange.genp.tot, #momentum values
             bins=np.arange(0,4,0.1),
-            weights=weights_gibuu_prism[k],
+            weights=genie_muons_inrange.genweight,
             histtype='step',
             lw=2,
             alpha=0.9,
-            label=labels_gibuu[k],
+            label=labels_genie[j],
             density=True if i == 1 else False, #set density
-            color=colors[k],
-            linestyle='-' if k % 2 == 0 else '--', #alternate linestyle to help with visibility
+            color=colors[j],
+            linestyle='-' if j % 2 == 0 else '--', #alternate linestyle to help with visibility
             )
     
-    for k,data in enumerate(ps_genie_prism):
-        ax_genie_momentum.hist(data, #cos theta values
-            bins=np.arange(0,4,0.1),
-            weights=weights_genie_prism[k],
-            histtype='step',
-            lw=2,
-            alpha=0.9,
-            label=labels_genie[k],
-            density=True if i == 1 else False, #set density
-            color=colors[k],
-            linestyle='-' if k % 2 == 0 else '--', #alternate linestyle to help with visibility
-            )
     
     #Set xlabels
     ax_gibuu_costheta.set_xlabel(r'$\cos\theta_\mu$')
@@ -502,18 +465,16 @@ for i,dens in enumerate(['','_dens']):
         plotters.save_plot(f'genie_prism_muon_momentum{dens}',fig=fig_genie_momentum,folder_name=PLOTS_DIR)
         plotters.save_plot(f'gibuu_prism_muon_momentum{dens}',fig=fig_gibuu_momentum,folder_name=PLOTS_DIR)
 
-
-
-
-
-
 #fig and ax for 2d hists
-fig_genie,ax_genie = plt.subplots(figsize=(12,10))
-fig_gibuu,ax_gibuu = plt.subplots(figsize=(12,10))
+fig_genie_angle,ax_genie_angle = plt.subplots(figsize=(12,10))
+fig_gibuu_angle,ax_gibuu_angle = plt.subplots(figsize=(12,10))
+
+fig_genie_momentum,ax_genie_momentum = plt.subplots(figsize=(12,10))
+fig_gibuu_momentum,ax_gibuu_momentum = plt.subplots(figsize=(12,10))
 
 #pie charts
-fig_genie_pie, axs_genie_pi = plt.subplots(len(thetas)-1, len(COSTHETA_BINS)-1, figsize=(24,20))
-#fig_gibuu_pie, axs_gibuu_pi = plt.subplots(len(thetas)-1, len(COSTHETA_BINS)-1, figsize=(12,10))
+fig_genie_angle_pie, axs_genie_angle_pie = plt.subplots(len(PRISM_BINS)-1, len(COSTHETA_BINS)-1, figsize=(24,20))
+fig_genie_momentum_pie, axs_genie_momentum_pie = plt.subplots(len(PRISM_BINS)-1, len(MOMENTUM_BINS)-1, figsize=(24,20))
 
 #Make legend labels for pie chart
 colors_pie = [u'#1f77b4', u'#ff7f0e', u'#2ca02c', u'#9467bd']
@@ -521,227 +482,157 @@ labels_pie = ['QE','Res','DIS','MEC']
 modes_genie = [0,1,2,10]
 legend_elements = [Patch(facecolor=color, edgecolor=color, label=label) for label, color in zip(labels_pie, colors_pie)]
 
-genie_angle_events = np.zeros((len(thetas)-1,len(COSTHETA_BINS)-1))
+#Prism vs momentum
+genie_angle_events = np.zeros((len(PRISM_BINS)-1,len(COSTHETA_BINS)-1))
 gibuu_angle_events = genie_angle_events.copy()
 
-for i in range(len(thetas)-1): #Prism theta bins
+#Theta vs momentum
+genie_momentum_events = np.zeros((len(PRISM_BINS)-1,len(MOMENTUM_BINS)-1))
+gibuu_momentum_events = genie_momentum_events.copy()
+
+for i in range(len(PRISM_BINS)-1): #Prism theta bins
   #if i >0: break
-  #Get neutrinos within theta bins
-  genie_inds_inrange = genie_prism_thetas[(genie_prism_thetas <= thetas[i+1]) & (genie_prism_thetas > thetas[i])].index.values
-  gibuu_inds_inrange = gibuu_prism_thetas[(gibuu_prism_thetas <= thetas[i+1]) & (gibuu_prism_thetas > thetas[i])].index.values
-  
-  #Convert to muon indeces
-  genie_muon_inds_inrange = utils.get_inds_from_sub_inds(set(genie_muons.index.values),set(genie_inds_inrange),3)
-  gibuu_muon_inds_inrange = utils.get_inds_from_sub_inds(set(gibuu_muons.index.values),set(gibuu_inds_inrange),3)
-          
-  #Get muons within theta bins
-  genie_muons_inrange = genie_muons.loc[genie_muon_inds_inrange]
-  gibuu_muons_inrange = gibuu_muons.loc[gibuu_muon_inds_inrange]
   
   for j in range(len(THETA_BINS)-1): #Muon angle bins
-    #if j < 8: continue
-    #Get muons within theta bins
-    genie_muons_inrange_intheta = genie_muons_inrange[(genie_muons_inrange.theta < THETA_BINS[j]) & (genie_muons_inrange.theta > THETA_BINS[j+1])]
-    gibuu_muons_inrange_intheta = gibuu_muons_inrange[(gibuu_muons_inrange.theta < THETA_BINS[j]) & (gibuu_muons_inrange.theta > THETA_BINS[j+1])]
+    #Mask to prism and theta bins
+    genie_muons_inrange = genie_muons.data[(genie_muons.data.prism_bins == i) &\
+      (genie_muons.data.costheta_bins == j)]
+    gibuu_muons_inrange = gibuu_muons.data[(gibuu_muons.data.prism_bins == i) &\
+      (gibuu_muons.data.costheta_bins == j)]
     
     #Get weights
-    genie_inrange_intheta_inds = utils.get_inds_from_sub_inds(set(genie_muons_inrange_intheta.index.values),set(genie_nu.index.values),3)
-    weights_genie = genie_nu.loc[genie_inrange_intheta_inds,'genweight'].values
+    genie_weights = genie_muons_inrange.genweight
+    gibuu_weights = gibuu_muons_inrange.genweight
     
-    gibuu_inrange_intheta_inds = utils.get_inds_from_sub_inds(set(gibuu_muons_inrange_intheta.index.values),set(gibuu_nu.index.values),3)
-    weights_gibuu = gibuu_nu.loc[gibuu_inrange_intheta_inds,'genweight'].values
+    #Get modes
+    genie_modes = genie_muons_inrange.genie_mode
+    gibuu_modes = gibuu_muons_inrange.genie_mode
     
     #Get number of events from weights
-    genie_angle_events[i][j] = np.sum(weights_genie)
-    gibuu_angle_events[i][j] = np.sum(weights_gibuu)
-    
-    #Get modes from indices
-    genie_nus_inrange_intheta = genie_nu.loc[genie_inrange_intheta_inds]
+    genie_angle_events[i][j] = np.sum(genie_weights)
+    gibuu_angle_events[i][j] = np.sum(gibuu_weights)
     
     #Pie chart with different modes
-    genie_mode_ratios = [np.sum(weights_genie[genie_nus_inrange_intheta.genie_mode == mode]) for mode in modes_genie]
-    #genie_mode_ratios.remove(0) #remove 0s
-    axs_genie_pi[i,j].pie(genie_mode_ratios,
+    genie_mode_ratios = [np.sum(genie_weights[genie_modes == mode]) for mode in modes_genie]
+    axs_genie_angle_pie[i,j].pie(genie_mode_ratios,
                   colors=colors_pie,
                  #labels=GENIE_INTERACTION_MAP.values(), 
                  autopct='%1.0f%%'
                  )
-    axs_genie_pi[i,j].set_xticks([])
-    axs_genie_pi[i,j].set_yticks([])
-    #plotters.set_style(axs_genie_pi[i,j])
+    axs_genie_angle_pie[i,j].set_xticks([])
+    axs_genie_angle_pie[i,j].set_yticks([])
+  for j in range(len(MOMENTUM_BINS)-1): #Muon momentum bins
+    #Mask to prism and theta bins
+    genie_muons_inrange = genie_muons.data[(genie_muons.data.prism_bins == i) &\
+      (genie_muons.data.momentum_bins == j)]
+    gibuu_muons_inrange = gibuu_muons.data[(gibuu_muons.data.prism_bins == i) &\
+      (gibuu_muons.data.momentum_bins == j)]
+    
+    #Get weights
+    genie_weights = genie_muons_inrange.genweight
+    gibuu_weights = gibuu_muons_inrange.genweight
+    
+    #Get modes
+    genie_modes = genie_muons_inrange.genie_mode
+    gibuu_modes = gibuu_muons_inrange.genie_mode
+    
+    #Get number of events from weights
+    genie_momentum_events[i][j] = np.sum(genie_weights)
+    gibuu_momentum_events[i][j] = np.sum(gibuu_weights)
+    
+    #Pie chart with different modes
+    genie_mode_ratios = [np.sum(genie_weights[genie_modes == mode]) for mode in modes_genie]
+    axs_genie_momentum_pie[i,j].pie(genie_mode_ratios,
+                  colors=colors_pie,
+                 #labels=GENIE_INTERACTION_MAP.values(), 
+                 autopct='%1.0f%%'
+                 )
+    axs_genie_momentum_pie[i,j].set_xticks([])
+    axs_genie_momentum_pie[i,j].set_yticks([])
 
 #Prep tick labels
 costheta_ticklabels = [f'{COSTHETA_BINS[i]:.2f} - {COSTHETA_BINS[i+1]:.2f}' for i in range(len(COSTHETA_BINS)-1)]
-prismtheta_ticklabels = [f'{thetas[i]:.2f} - {thetas[i+1]:.2f}' for i in range(len(thetas)-1)]
+momentum_ticklabels = [f'{MOMENTUM_BINS[i]:.2f} - {MOMENTUM_BINS[i+1]:.2f}' for i in range(len(MOMENTUM_BINS)-1)]
+prismtheta_ticklabels = [f'{PRISM_BINS[i]:.2f} - {PRISM_BINS[i+1]:.2f}' for i in range(len(PRISM_BINS)-1)]
 
-#Genie
-genie_im = ax_genie.imshow(genie_angle_events,cmap='Oranges')
+#Genie - angle table
+genie_im_angle = ax_genie_angle.imshow(genie_angle_events,cmap='Oranges')
 for j in range(len(COSTHETA_BINS)-1):
-    for i in range(len(thetas)-1):
-        text = ax_genie.text(j,i, f'{round(genie_angle_events[i, j]):,}'+'\n'+f'{round(100*genie_angle_events[i, j]/np.sum(genie_angle_events),2):.2f}%', 
+    for i in range(len(PRISM_BINS)-1):
+        text = ax_genie_angle.text(j,i, f'{round(genie_angle_events[i, j]):,}'+'\n'+f'{round(100*genie_angle_events[i, j]/np.sum(genie_angle_events),2):.2f}%', 
                              ha="center", va="center",fontsize=14)
-ax_genie.set_title(SIM_LABEL+' '+GENIE_MODEL+f' ({round(genie_muon_count):,})')
+ax_genie_angle.set_title(SIM_LABEL+' '+GENIE_MODEL+f' ({round(genie_muon_count):,})')
 
-#Gibuu
-gibuu_im = ax_gibuu.imshow(gibuu_angle_events,cmap='Oranges')
+#Genie - momentum table
+genie_im_momentum = ax_genie_momentum.imshow(genie_momentum_events,cmap='Oranges')
+for j in range(len(MOMENTUM_BINS)-1):
+    for i in range(len(PRISM_BINS)-1):
+        text = ax_genie_momentum.text(j,i, f'{round(genie_momentum_events[i, j]):,}'+'\n'+f'{round(100*genie_momentum_events[i, j]/np.sum(genie_momentum_events),2):.2f}%', 
+                             ha="center", va="center",fontsize=14)
+ax_genie_momentum.set_title(SIM_LABEL+' '+GENIE_MODEL+f' ({round(genie_muon_count):,})')
+
+#Gibuu - angle table
+gibuu_im_angle = ax_gibuu_angle.imshow(gibuu_angle_events,cmap='Oranges')
 for j in range(len(COSTHETA_BINS)-1):
-    for i in range(len(thetas)-1):
-        text = ax_gibuu.text(j, i, f'{round(gibuu_angle_events[i, j]):,}'+'\n'+f'{round(100*gibuu_angle_events[i, j]/np.sum(gibuu_angle_events),2):.2f}%', 
+    for i in range(len(PRISM_BINS)-1):
+        text = ax_gibuu_angle.text(j, i, f'{round(gibuu_angle_events[i, j]):,}'+'\n'+f'{round(100*gibuu_angle_events[i, j]/np.sum(gibuu_angle_events),2):.2f}%', 
                              ha="center", va="center",fontsize=14)
-ax_gibuu.set_title(SIM_LABEL+' '+GIBUU_MODEL+f' ({round(gibuu_muon_count):,})')
+ax_gibuu_angle.set_title(SIM_LABEL+' '+GIBUU_MODEL+f' ({round(gibuu_muon_count):,})')
 
-#Both
-for ax in [ax_genie,ax_gibuu]:
+#Gibuu - momentum table
+gibuu_im_momentum = ax_gibuu_momentum.imshow(gibuu_momentum_events,cmap='Oranges')
+for j in range(len(MOMENTUM_BINS)-1):
+    for i in range(len(PRISM_BINS)-1):
+        text = ax_gibuu_momentum.text(j,i, f'{round(gibuu_momentum_events[i, j]):,}'+'\n'+f'{round(100*gibuu_momentum_events[i, j]/np.sum(gibuu_momentum_events),2):.2f}%', 
+                             ha="center", va="center",fontsize=14)
+ax_gibuu_momentum.set_title(SIM_LABEL+' '+GIBUU_MODEL+f' ({round(gibuu_muon_count):,})')
+
+#Both angle plots
+for ax in [ax_genie_angle,ax_gibuu_angle]:
   ax.set_xlabel(r'$\cos\theta_\mu$')
-  ax.set_ylabel(r'$\theta_{PRISM}$')
   ax.set_xticks(np.arange(0,len(COSTHETA_BINS)-1))
-  ax.set_yticks(np.arange(0,len(thetas)-1))
   ax.set_xticklabels(labels=costheta_ticklabels,rotation=30)
-  ax.set_yticklabels(labels=prismtheta_ticklabels,rotation=30)
-  plotters.set_style(ax)
-
-#Pie plot
-axs_genie_pi[0,-1].legend(handles=legend_elements,fontsize=18,bbox_to_anchor=(1.01,1))
-plotters.add_label(axs_genie_pi[-1,-1],GENIE_LABEL,where='bottomrightoutside',fontsize=20,alpha=0.8,color='darkred')
-
-if save_plots:
-    plotters.save_plot('genie_prism_muon_costheta_counts',fig=fig_genie,folder_name=PLOTS_DIR)
-    plotters.save_plot('gibuu_prism_muon_costheta_counts',fig=fig_gibuu,folder_name=PLOTS_DIR)
-    plotters.save_plot('genie_prism_muon_costheta_pie',fig=fig_genie_pie,folder_name=PLOTS_DIR)
-
-
-
-
-
-#I'm lazy so im copy pasting the above code to use for the momenta bins
-
-#fig and ax for 2d hists
-fig_genie,ax_genie = plt.subplots(figsize=(12,10))
-fig_gibuu,ax_gibuu = plt.subplots(figsize=(12,10))
-
-#pie charts
-fig_genie_pie, axs_genie_pi = plt.subplots(len(thetas)-1, len(MOMENTUM_BINS)-1, figsize=(24,20))
-#fig_gibuu_pie, axs_gibuu_pi = plt.subplots(len(thetas)-1, len(COSTHETA_BINS)-1, figsize=(12,10))
-
-#Make legend labels for pie chart
-colors_pie = [u'#1f77b4', u'#ff7f0e', u'#2ca02c', u'#9467bd']
-labels_pie = ['QE','Res','DIS','MEC']
-modes_genie = [0,1,2,10]
-legend_elements = [Patch(facecolor=color, edgecolor=color, label=label) for label, color in zip(labels_pie, colors_pie)]
-
-genie_angle_events = np.zeros((len(thetas)-1,len(MOMENTUM_BINS)-1))
-gibuu_angle_events = genie_angle_events.copy()
-
-for i in range(len(thetas)-1): #Prism theta bins
-  #if i >0: break
-  #Get neutrinos within theta bins
-  genie_inds_inrange = genie_prism_thetas[(genie_prism_thetas <= thetas[i+1]) & (genie_prism_thetas > thetas[i])].index.values
-  gibuu_inds_inrange = gibuu_prism_thetas[(gibuu_prism_thetas <= thetas[i+1]) & (gibuu_prism_thetas > thetas[i])].index.values
-  
-  #Convert to muon indeces
-  genie_muon_inds_inrange = utils.get_inds_from_sub_inds(set(genie_muons.index.values),set(genie_inds_inrange),3)
-  gibuu_muon_inds_inrange = utils.get_inds_from_sub_inds(set(gibuu_muons.index.values),set(gibuu_inds_inrange),3)
-          
-  #Get muons within theta bins
-  genie_muons_inrange = genie_muons.loc[genie_muon_inds_inrange]
-  gibuu_muons_inrange = gibuu_muons.loc[gibuu_muon_inds_inrange]
-  
-  for j in range(len(MOMENTUM_BINS)-1): #Muon angle bins
-    #if j < 8: continue
-    #Extrac muon momenta
-    genie_momentum_inrange = np.linalg.norm(genie_muons_inrange.genp,axis=1)
-    gibuu_momentum_inrange = np.linalg.norm(gibuu_muons_inrange.genp,axis=1)
-    
-    #Get muons within momentum bins
-    genie_muons_inrange_inp = genie_muons_inrange[(genie_momentum_inrange > MOMENTUM_BINS[j]) & (genie_momentum_inrange < MOMENTUM_BINS[j+1])]
-    gibuu_muons_inrange_inp = gibuu_muons_inrange[(gibuu_momentum_inrange > MOMENTUM_BINS[j]) & (gibuu_momentum_inrange < MOMENTUM_BINS[j+1])]
-    
-    #Get weights
-    genie_inrange_inp_inds = utils.get_inds_from_sub_inds(set(genie_muons_inrange_inp.index.values),set(genie_nu.index.values),3)
-    weights_genie = genie_nu.loc[genie_inrange_inp_inds,'genweight'].values
-    
-    gibuu_inrange_inp_inds = utils.get_inds_from_sub_inds(set(gibuu_muons_inrange_inp.index.values),set(gibuu_nu.index.values),3)
-    weights_gibuu = gibuu_nu.loc[gibuu_inrange_inp_inds,'genweight'].values
-    
-    #Get number of events from weights
-    genie_angle_events[i][j] = np.sum(weights_genie)
-    gibuu_angle_events[i][j] = np.sum(weights_gibuu)
-    
-    #Get modes from indices
-    genie_nus_inrange_inp = genie_nu.loc[genie_inrange_inp_inds]
-    
-    #Pie chart with different modes
-    genie_mode_ratios = [np.sum(weights_genie[genie_nus_inrange_inp.genie_mode == mode]) for mode in modes_genie]
-    #genie_mode_ratios.remove(0) #remove 0s
-    axs_genie_pi[i,j].pie(genie_mode_ratios,
-                  colors=colors_pie,
-                 #labels=GENIE_INTERACTION_MAP.values(), 
-                 autopct='%1.0f%%'
-                 )
-    axs_genie_pi[i,j].set_xticks([])
-    axs_genie_pi[i,j].set_yticks([])
-    #plotters.set_style(axs_genie_pi[i,j])
-
-#Prep tick labels
-p_ticklabels = [f'{MOMENTUM_BINS[i]:.2f} - {MOMENTUM_BINS[i+1]:.2f}' for i in range(len(MOMENTUM_BINS)-1)]
-prismtheta_ticklabels = [f'{thetas[i]:.2f} - {thetas[i+1]:.2f}' for i in range(len(thetas)-1)]
-
-#Genie
-genie_im = ax_genie.imshow(genie_angle_events,cmap='Oranges')
-for j in range(len(MOMENTUM_BINS)-1):
-    for i in range(len(thetas)-1):
-        text = ax_genie.text(j,i, f'{round(genie_angle_events[i, j]):,}'+'\n'+f'{round(100*genie_angle_events[i, j]/np.sum(genie_angle_events),2):.2f}%', 
-                             ha="center", va="center",fontsize=14)
-ax_genie.set_title(SIM_LABEL+' '+GENIE_MODEL+f' ({round(genie_muon_count):,})')
-
-#Gibuu
-gibuu_im = ax_gibuu.imshow(gibuu_angle_events,cmap='Oranges')
-for j in range(len(MOMENTUM_BINS)-1):
-    for i in range(len(thetas)-1):
-        text = ax_gibuu.text(j, i, f'{round(gibuu_angle_events[i, j]):,}'+'\n'+f'{round(100*gibuu_angle_events[i, j]/np.sum(gibuu_angle_events),2):.2f}%', 
-                             ha="center", va="center",fontsize=14)
-ax_gibuu.set_title(SIM_LABEL+' '+GIBUU_MODEL+f' ({round(gibuu_muon_count):,})')
-
-#Both
-for ax in [ax_genie,ax_gibuu]:
+#Both momentum plots
+for ax in [ax_genie_momentum,ax_gibuu_momentum]:
   ax.set_xlabel(r'$p_\mu$ [GeV]')
-  ax.set_ylabel(r'$\theta_{PRISM}$')
   ax.set_xticks(np.arange(0,len(MOMENTUM_BINS)-1))
-  ax.set_yticks(np.arange(0,len(thetas)-1))
-  ax.set_xticklabels(labels=p_ticklabels,rotation=30)
+  ax.set_xticklabels(labels=momentum_ticklabels,rotation=30)
+#All imshow plots
+for ax in [ax_genie_angle,ax_gibuu_angle,ax_genie_momentum,ax_gibuu_momentum]:
+  ax.set_ylabel(r'$\theta_{PRISM}$')
+  ax.set_yticks(np.arange(0,len(PRISM_BINS)-1))
   ax.set_yticklabels(labels=prismtheta_ticklabels,rotation=30)
   plotters.set_style(ax)
 
-#Pie plot
-axs_genie_pi[0,-1].legend(handles=legend_elements,fontsize=18,bbox_to_anchor=(1.01,1))
-plotters.add_label(axs_genie_pi[-1,-1],GENIE_LABEL,where='bottomrightoutside',fontsize=20,alpha=0.8,color='darkred')
+#Pie plots
+for axs in [axs_genie_angle_pie,axs_genie_momentum_pie]:
+  axs[0,-1].legend(handles=legend_elements,fontsize=18,bbox_to_anchor=(1.01,1))
+  plotters.add_label(axs[-1,-1],GENIE_LABEL,where='bottomrightoutside',fontsize=20,alpha=0.8,color='darkred')
 
-if save_plots:
-    plotters.save_plot('genie_prism_muon_momentum_counts',fig=fig_genie,folder_name=PLOTS_DIR)
-    plotters.save_plot('gibuu_prism_muon_momentum_counts',fig=fig_gibuu,folder_name=PLOTS_DIR)
-    plotters.save_plot('genie_prism_muon_momentum_pie',fig=fig_genie_pie,folder_name=PLOTS_DIR)
-
-
-
-
+if True:
+    plotters.save_plot('genie_prism_muon_costheta_counts',fig=fig_genie_angle,folder_name=PLOTS_DIR)
+    plotters.save_plot('gibuu_prism_muon_costheta_counts',fig=fig_gibuu_angle,folder_name=PLOTS_DIR)
+    
+    plotters.save_plot('genie_prism_muon_momentum_counts',fig=fig_genie_momentum,folder_name=PLOTS_DIR)
+    plotters.save_plot('gibuu_prism_muon_momentum_counts',fig=fig_gibuu_momentum,folder_name=PLOTS_DIR)
+    
+    plotters.save_plot('genie_prism_muon_costheta_pie',fig=fig_genie_angle_pie,folder_name=PLOTS_DIR)
+    plotters.save_plot('genie_prism_muon_momentum_pie',fig=fig_genie_momentum_pie,folder_name=PLOTS_DIR)
 
 for j,dens in enumerate(['','_dens']):
   fig,axs = plt.subplots(nrows=3,ncols=3,figsize=(15,12),sharex=True)
   for i,ax in enumerate(axs.flatten()):
     #Get muons within theta bins
-    genie_muons_inrange = genie_muons[(genie_muons.theta < THETA_BINS[i]) & (genie_muons.theta > THETA_BINS[i+1])]
-    gibuu_muons_inrange = gibuu_muons[(gibuu_muons.theta < THETA_BINS[i]) & (gibuu_muons.theta > THETA_BINS[i+1])]
+    genie_muons_inrange = genie_muons.data[(genie_muons.data.costheta_bins == i)]
+    gibuu_muons_inrange = gibuu_muons.data[(gibuu_muons.data.costheta_bins == i)]
     
     #Get momenta
-    ps_genie = np.linalg.norm(genie_muons_inrange.genp,axis=1)
-    ps_gibuu = np.linalg.norm(gibuu_muons_inrange.genp,axis=1)
+    ps_genie = genie_muons_inrange.genp.tot
+    ps_gibuu = gibuu_muons_inrange.genp.tot
     
     #Get weights
-    genie_inrange_inds = utils.get_inds_from_sub_inds(set(genie_muons_inrange.index.values),set(genie_nu.index.values),3)
-    weights_genie = genie_nu.loc[genie_inrange_inds,'genweight'].values
-    
-    gibuu_inrange_inds = utils.get_inds_from_sub_inds(set(gibuu_muons_inrange.index.values),set(gibuu_nu.index.values),3)
-    weights_gibuu = gibuu_nu.loc[gibuu_inrange_inds,'genweight'].values
+    weights_genie = genie_muons_inrange.genweight
+    weights_gibuu = gibuu_muons_inrange.genweight
     
     #Get number of events from weights
     genie_inrange_count = np.sum(weights_genie)
@@ -768,28 +659,20 @@ for j,dens in enumerate(['','_dens']):
 
 
 
-
 for j,dens in enumerate(['','_dens']):
   fig,axs = plt.subplots(nrows=3,ncols=3,figsize=(15,12),sharex=True)
   for i,ax in enumerate(axs.flatten()):
-    #Get masks for momenta ranges
-    genie_mask = (np.linalg.norm(genie_muons.genp,axis=1) > MOMENTUM_BINS[i]) & (np.linalg.norm(genie_muons.genp,axis=1) < MOMENTUM_BINS[i+1])
-    gibuu_mask = (np.linalg.norm(gibuu_muons.genp,axis=1) > MOMENTUM_BINS[i]) & (np.linalg.norm(gibuu_muons.genp,axis=1) < MOMENTUM_BINS[i+1])
-    
     #Make dataframes
-    genie_muons_inrange = genie_muons[genie_mask]
-    gibuu_muons_inrange = gibuu_muons[gibuu_mask]
+    genie_muons_inrange = genie_muons.data[(genie_muons.data.momentum_bins == i)]
+    gibuu_muons_inrange = gibuu_muons.data[(gibuu_muons.data.momentum_bins == i)]
     
     #Get angles
-    costhetas_genie = np.cos(genie_muons_inrange.theta)*np.sign(genie_muons_inrange.theta)
-    costhetas_gibuu = np.cos(gibuu_muons_inrange.theta)*np.sign(gibuu_muons_inrange.theta)
+    costhetas_genie = genie_muons_inrange.costheta
+    costhetas_gibuu = gibuu_muons_inrange.costheta
     
     #Get weights
-    genie_inrange_inds = utils.get_inds_from_sub_inds(set(genie_muons_inrange.index.values),set(genie_nu.index.values),3)
-    weights_genie = genie_nu.loc[genie_inrange_inds,'genweight'].values
-    
-    gibuu_inrange_inds = utils.get_inds_from_sub_inds(set(gibuu_muons_inrange.index.values),set(gibuu_nu.index.values),3)
-    weights_gibuu = gibuu_nu.loc[gibuu_inrange_inds,'genweight'].values
+    weights_genie = genie_muons_inrange.genweight
+    weights_gibuu = gibuu_muons_inrange.genweight
     
     #Get number of events from weights
     genie_inrange_count = np.sum(weights_genie)
@@ -813,32 +696,42 @@ for j,dens in enumerate(['','_dens']):
   if save_plots:
     plotters.save_plot(f'theta_mu_momentum{dens}',fig=fig,folder_name=PLOTS_DIR)
 
+
+
+
 #Single cos range statistics
 theta_lower = 0.99
 theta_upper = 1
+
+theta_bins = [theta_lower,theta_upper]
+
+#Get muons within theta bins
+genie_muons_inrange = genie_muons.copy()
+gibuu_muons_inrange = gibuu_muons.copy()
+
+#Mask to bin range
+genie_muons_inrange.assign_costheta_bins(theta_bins)
+gibuu_muons_inrange.assign_costheta_bins(theta_bins)
+
+genie_muons_inrange_df = genie_muons_inrange.data[(genie_muons_inrange.data.costheta_bins == 0)]
+gibuu_muons_inrange_df = gibuu_muons_inrange.data[(gibuu_muons_inrange.data.costheta_bins == 0)]
+
 for j,dens in enumerate(['','_dens']):
   fig,ax = plt.subplots(figsize=(8,6))
-  #Get muons within theta bins
-  genie_muons_inrange = genie_muons[(genie_muons.theta < theta_upper) & (genie_muons.theta > theta_lower)]
-  gibuu_muons_inrange = gibuu_muons[(gibuu_muons.theta < theta_upper) & (gibuu_muons.theta > theta_lower)]
-  
-  #Get momenta
-  ps_genie = np.linalg.norm(genie_muons_inrange.genp,axis=1)
-  ps_gibuu = np.linalg.norm(gibuu_muons_inrange.genp,axis=1)
-  
   #Get weights
-  genie_inrange_inds = utils.get_inds_from_sub_inds(set(genie_muons_inrange.index.values),set(genie_nu.index.values),3)
-  weights_genie = genie_nu.loc[genie_inrange_inds,'genweight'].values
-  
-  gibuu_inrange_inds = utils.get_inds_from_sub_inds(set(gibuu_muons_inrange.index.values),set(gibuu_nu.index.values),3)
-  weights_gibuu = gibuu_nu.loc[gibuu_inrange_inds,'genweight'].values
+  weights_genie = genie_muons_inrange_df.genweight
+  weights_gibuu = gibuu_muons_inrange_df.genweight
   
   #Get number of events from weights
   genie_inrange_count = np.sum(weights_genie)
   gibuu_inrange_count = np.sum(weights_gibuu)
   
+  #Get momenta
+  ps_genie = genie_muons_inrange_df.genp.tot
+  ps_gibuu = gibuu_muons_inrange_df.genp.tot
+  
   ax.hist([ps_genie,ps_gibuu],
-          bins=np.arange(0,3,0.1),
+          bins=np.arange(0,4,0.1),
           weights=[weights_genie,weights_gibuu],
           histtype='step',
           lw=3,
@@ -854,7 +747,6 @@ for j,dens in enumerate(['','_dens']):
                      fontsize=20,alpha=0.9,where='centerright',color='darkred')
   if save_plots:
     plotters.save_plot(f'momentum_mu_single_theta_bin_lowerer{dens}',fig=fig,folder_name=PLOTS_DIR)
-
 
 
 
