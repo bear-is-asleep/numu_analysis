@@ -24,6 +24,7 @@ print(f'SBND imports: {s1-s0:.2f} s')
 
 #Constants/variables
 DATA_DIR  = '/sbnd/data/users/brindenc/analyze_sbnd/numu/'
+nom_pot = 10e20 / 12 #3 month exposure
 process_genie = True
 process_gibuu = True
 
@@ -35,7 +36,9 @@ if process_gibuu:
   #Neutrino processing
   s0 = time()
   gibuu_nu_df = pd.read_hdf(fname, key='mcnu')
-  gibuu_nu = NU(gibuu_nu_df)
+  gibuu_nu = NU(gibuu_nu_df
+                ,pot=nom_pot
+                ,prism_bins=PRISM_BINS)
   gibuu_nu.postprocess_and_cut() #inplace - add variables and cuts
   s1 = time()
   print(f'-gibuu nu time: {s1-s0:.2f} s')
@@ -43,6 +46,7 @@ if process_gibuu:
   #Primary processing
   gibuu_prim_df = pd.read_hdf(fname, key='mcprim')
   gibuu_prim = MCPRIM(gibuu_prim_df
+                      ,pot=nom_pot
                       ,prism_bins=PRISM_BINS
                       ,momentum_bins=MOMENTUM_BINS
                       ,costheta_bins=COSTHETA_BINS)
@@ -67,7 +71,9 @@ if process_genie:
   s0 = time()
   genie_nu_df = pd.read_hdf(fname, key='mcnu')
   #genie_nu_df.loc[:,'genweight'] = np.ones(len(genie_nu_df)) #add genie weight to weight events to POT
-  genie_nu = NU(genie_nu_df)
+  genie_nu = NU(genie_nu_df
+                ,pot=nom_pot
+                ,prism_bins=PRISM_BINS)
   genie_nu.postprocess_and_cut() #inplace - add variables and cuts
   s1 = time()
   print(f'-genie nu time: {s1-s0:.2f} s')
@@ -75,6 +81,7 @@ if process_genie:
   #Primary processing
   genie_prim_df = pd.read_hdf(fname, key='mcprim')
   genie_prim = MCPRIM(genie_prim_df
+                      ,pot=nom_pot
                       ,prism_bins=PRISM_BINS
                       ,momentum_bins=MOMENTUM_BINS
                       ,costheta_bins=COSTHETA_BINS)

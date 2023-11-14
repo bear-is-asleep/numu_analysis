@@ -1,0 +1,5 @@
+jupyterlab
+numpy
+uproot
+pandas
+matplotlib
